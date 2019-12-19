@@ -61,7 +61,6 @@ _EOF
 }
 
 verify_input() {
-  # Not checking for product here yet since it may not be present on all devices
   if [[ ! -d "$1/vendor" || ! -d "$1/system" || ! -d "$1/radio" || \
         ! -f "$1/system/build.prop" ]]; then
     echo "[-] Invalid input directory structure"
@@ -120,21 +119,13 @@ get_build_id() {
   echo "$build_id"
 }
 
-has_partition_size() {
-  local search_file="$2/${1}_partition_size"
+has_vendor_size() {
+  local search_file="$1/vendor_partition_size"
   if [ -f "$search_file" ]; then
     cat "$search_file"
   else
     echo ""
   fi
-}
-
-has_vendor_size() {
-  has_partition_size vendor "$1"
-}
-
-has_product_size() {
-  has_partition_size product "$1"
 }
 
 read_invalid_symlink() {
@@ -167,13 +158,6 @@ copy_radio_files() {
       cp "$inDir/radio/$img.img" "$outDir/radio/"
     done
   fi
-
-  if [[ "$VENDOR" == "google" && "$OTA_IMGS_LIST" != "" ]]; then
-    for img in "${OTA_IMGS[@]}"
-    do
-      cp "$inDir/radio/$img.img" "$outDir/radio/"
-    done
-  fi
 }
 
 extract_blobs() {
@@ -181,7 +165,6 @@ extract_blobs() {
   local inDir="$2"
   local outDir_prop="$3/proprietary"
   local outDir_vendor="$3/vendor"
-  local outDir_product="$3/product"
 
   local src="" dst="" dstDir="" outBase="" outPath="" openTag=""
 
@@ -212,16 +195,13 @@ extract_blobs() {
     fi
 
     # Files under /system go to $outDir_prop, while files from /vendor
-    # to $outDir_vendor, and files from /product to $outDir_product
+    # to $outDir_vendor
     if [[ $src == system/* ]]; then
       outBase=$outDir_prop
       dst=$(echo "$dst" | sed 's#^system/##')
     elif [[ $src == vendor/* ]]; then
       outBase=$outDir_vendor
       dst=$(echo "$dst" | sed 's#^vendor/##')
-    elif [[ $src == product/* ]]; then
-      outBase=$outDir_product
-      dst=$(echo "$dst" | sed 's#^product/##')
     else
       echo "[-] Invalid path detected at '$blobsList' ($src)"
       abort 1
@@ -261,7 +241,6 @@ update_vendor_blobs_mk() {
 
   local relDir_prop="vendor/$VENDOR_DIR/$DEVICE/proprietary"
   local relDir_vendor="vendor/$VENDOR_DIR/$DEVICE/vendor"
-  local relDir_product="vendor/$VENDOR_DIR/$DEVICE/product"
 
   local src="" srcRelDir="" dst="" dstRelDir="" fileExt="" dstMk=""
 
@@ -304,9 +283,6 @@ update_vendor_blobs_mk() {
     elif [[ $src == vendor/* ]]; then
       srcRelDir=$relDir_vendor
       src=$(echo "$src" | sed 's#^vendor/##')
-    elif [[ $src == product/* ]]; then
-      srcRelDir=$relDir_product
-      src=$(echo "$src" | sed 's#^product/##')
     else
       echo "[-] Invalid src path detected at '$blobsList'"
       abort 1
@@ -318,10 +294,6 @@ update_vendor_blobs_mk() {
     elif [[ $dst == vendor/* ]]; then
       dstRelDir='$(TARGET_COPY_OUT_VENDOR)'
       dst=$(echo "$dst" | sed 's#^vendor/##')
-      dstMk="$BOARD_CONFIG_VENDOR_MK"
-    elif [[ $dst == product/* ]]; then
-      dstRelDir='$(TARGET_COPY_OUT_PRODUCT)'
-      dst=$(echo "$dst" | sed 's#^product/##')
       dstMk="$BOARD_CONFIG_VENDOR_MK"
     else
       echo "[-] Invalid dst path detected at '$blobsList'"
@@ -400,20 +372,12 @@ gen_board_vendor_mk() {
         echo "\$(call add-radio-file,radio/$img.img)"
       done
     fi
-
-    if [[ "$VENDOR" == "google" && "$OTA_IMGS_LIST" != "" ]]; then
-      for img in "${OTA_IMGS[@]}"
-      do
-        echo "\$(call add-radio-file,radio/$img.img)"
-      done
-    fi
   } >> "$ANDROID_BOARD_VENDOR_MK"
 }
 
 gen_board_cfg_mk() {
   local inDir="$1"
   local v_img_sz
-  local p_img_sz
 
   # First lets check if vendor partition size has been extracted from
   # previous data extraction script
@@ -423,27 +387,12 @@ gen_board_cfg_mk() {
     abort 1
   fi
 
-  # Then lets check if product partition size has been extracted from
-  # previous data extraction script
-  p_img_sz="$(has_product_size "$inDir")"
-  if [[ "$p_img_sz" == "" ]]; then
-    echo "[!] Unknown product image size for '$DEVICE' device"
-  fi
-
   {
     echo "TARGET_BOARD_INFO_FILE := vendor/$VENDOR_DIR/$DEVICE/vendor-board-info.txt"
     echo 'BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := ext4'
     echo 'ifneq ($(PRODUCT_USE_DYNAMIC_PARTITIONS), true)'
     echo "  BOARD_VENDORIMAGE_PARTITION_SIZE := $v_img_sz"
     echo 'endif'
-    if [[ "$p_img_sz" != "" ]]; then
-      echo 'ifneq ($(PRODUCT_NO_PRODUCT_PARTITION), true)'
-      echo '  ifneq ($(PRODUCT_USE_DYNAMIC_PARTITIONS), true)'
-      echo "    BOARD_PRODUCTIMAGE_PARTITION_SIZE := $p_img_sz"
-      echo '  endif'
-      echo '  BOARD_PRODUCTIMAGE_FILE_SYSTEM_TYPE := ext4'
-      echo 'endif'
-    fi
 
     # Update with user selected extra flags
     echo "$MK_FLAGS_LIST"
@@ -1001,10 +950,6 @@ update_ab_ota_partitions() {
     do
       echo "    $partition \\"
     done
-    for partition in "${OTA_IMGS[@]}"
-    do
-      echo "    $partition \\"
-    done
   }  >> "$outMk"
   strip_trail_slash_from_file "$outMk"
 }
@@ -1199,7 +1144,6 @@ readonly DEVICE_VENDOR_CONFIG="$(jqIncRawArray "$API_LEVEL" "$CONFIG_TYPE" "devi
 readonly EXTRA_MODULES="$(jqIncRawArray "$API_LEVEL" "$CONFIG_TYPE" "new-modules" "$CONFIG_FILE")"
 readonly FORCE_MODULES="$(jqIncRawArray "$API_LEVEL" "$CONFIG_TYPE" "forced-modules" "$CONFIG_FILE")"
 readonly EXTRA_IMGS_LIST="$(jqIncRawArrayTop "extra-partitions" "$CONFIG_FILE")"
-readonly OTA_IMGS_LIST="$(jqIncRawArrayTop "ota-partitions" "$CONFIG_FILE")"
 
 # Populate the array with the APK that need to maintain their signature
 readarray -t PSIG_BC_FILES < <(
@@ -1225,9 +1169,6 @@ fi
 BUILD_ID=$(get_build_id "$INPUT_DIR/system/build.prop")
 if [[ "$EXTRA_IMGS_LIST" != "" ]]; then
   readarray -t EXTRA_IMGS < <(echo "$EXTRA_IMGS_LIST")
-fi
-if [[ "$OTA_IMGS_LIST" != "" ]]; then
-  readarray -t OTA_IMGS < <(echo "$OTA_IMGS_LIST")
 fi
 
 
@@ -1300,7 +1241,6 @@ update_vendor_blobs_mk "$BLOBS_LIST"
 # Generate device-vendor.mk makefile (will be updated later)
 echo "[*] Generating '$(basename "$DEVICE_VENDOR_MK")'"
 echo -e "VENDOR_DEVICE := \$(TARGET_PRODUCT:aosp_%=%)" >> "$DEVICE_VENDOR_MK"
-echo -e "\$(call inherit-product, vendor/$VENDOR_DIR/\$(VENDOR_DEVICE)/\$(VENDOR_DEVICE)-vendor-blobs.mk)\n" >> "$DEVICE_VENDOR_MK"
 
 # Append items listed in device vendor configuration file
 {
